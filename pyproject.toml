@@ -1,0 +1,9 @@
+[project]
+name = "termstructure"
+version = "0.1.0"
+description = "One-factor short-rate models calibrated to the US Treasury curve"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

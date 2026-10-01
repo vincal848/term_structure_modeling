@@ -1,0 +1,250 @@
+---
+title: "Term Structure Models"
+author: "Caleb Vinson"
+date: " "
+output: pdf_document
+---
+
+<!--
+SUPERSEDED. Kept for reference only -- this file is not part of the rebuilt
+project and is known to be incorrect in several places. Do not source or knit
+this for anything other than reading it against the replacement.
+
+Known defects, each with a named regression test in tests/testthat/:
+
+1. The "HW Model" chunk uses a constant `theta <- 0.05` inside the Euler loop.
+   That is Vasicek with a constant long-run mean, not Hull-White -- the whole
+   point of Hull-White is a time-dependent theta(t) fitted to today's curve,
+   which this never does. Fixed by simulate_hull_white()'s theta(t)
+   construction in R/short_rate.R, pinned by
+   test_hull_white_reproduces_the_input_discount_curve_exactly_at_t_0 in
+   tests/testthat/test-bond-prices.R.
+2. The "CIR Model" chunk clips negative simulated rates to zero after every
+   step (`short_rate[i] <- max(short_rate[i], 0)`). That is a reflecting
+   barrier, not the CIR process: it injects extra probability mass just above
+   zero on every step that would have gone negative, biasing the simulated
+   mean upward. Fixed by simulate_cir()'s exact noncentral chi-square scheme
+   (default) and documented full-truncation alternative in R/short_rate.R,
+   pinned by the CIR moment and positivity tests in
+   tests/testthat/test-short-rate.R.
+3. `n <- T/dt` is used directly as a loop bound with no check that it is an
+   integer number of steps, and could silently truncate. Fixed by
+   .check_sim_inputs()'s integer step-count validation in R/short_rate.R,
+   pinned by
+   test_simulate_vasicek_rejects_a_horizon_that_is_not_an_integer_number_of_steps.
+4. `T <- 1` shadows base R's `T`, the built-in alias for `TRUE` -- any later
+   bare `T` in the same scope silently means 1, not true/false. Renamed to
+   `Tt` throughout R/.
+5. Every model chunk only ever plots one simulated path at one fixed seed, so
+   nothing here characterizes a distribution, and there are no closed-form
+   bond prices to check the simulation against at all. Fixed by vectorised
+   many-path simulate_*() in R/short_rate.R and closed-form
+   vasicek_bond_price(), cir_bond_price(), hull_white_bond_price() in
+   R/bond_prices.R, cross-checked against Monte Carlo via mc_bond_price() and
+   pinned by the "...bond price matches the closed form within 3 standard
+   errors" tests in tests/testthat/test-bond-prices.R.
+6. Nelson-Siegel is fit to 6 hardcoded maturity/yield points, with no test
+   that the fit recovers known parameters or works on real data. Fixed by
+   fit_ns() in R/nelson_siegel.R, pinned by
+   test_fit_ns_recovers_known_parameters_from_synthetic_noiseless_data and
+   test_fit_ns_has_small_rmse_on_the_cached_fred_curve in
+   tests/testthat/test-nelson-siegel.R, with the curve itself coming from
+   R/data.R.
+7. `library(quantmod)`, `library(vars)` and `library(ggplot2)` are loaded and
+   never used anywhere in the file. quantmod now does real work in R/data.R,
+   ggplot2 produces the validation figures in R/validate.R, and vars is
+   dropped -- there was never a VAR model here.
+
+The working implementation is R/short_rate.R, R/bond_prices.R,
+R/nelson_siegel.R and R/data.R, run through run.R and documented in
+docs/VALIDATION.md.
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(stats)
+library(minpack.lm)
+library(quantmod)
+library(vars)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+```
+
+
+```{r, echo=FALSE}
+
+
+
+models <- data.frame(
+  Model = c("Vasicek", "CIR", "Hull-White", "Black-Karasinski", "Nelson-Siegel"),
+  Uniqueness = c(
+    "Mean-reverting with constant volatility.",
+    "Non-negativity via square-root volatility.",
+    "Time-dependent mean reversion.",
+    "Logarithmic modeling of the short rate.",
+    "Empirical yield curve representation."
+  ),
+  Pro = c(
+    "Analytical tractability.",
+    "Ensures positive rates.",
+    "Fits initial yield curve.",
+    "Ensures positive rates.",
+    "Intuitive interpretation of parameters."
+  ),
+  Con = c(
+    "Allows negative rates.",
+    "Difficult to calibrate.",
+    "Increased calibration complexity.",
+    "Requires numerical solutions.",
+    "Lacks arbitrage-free properties."
+  )
+)
+
+kable(models, format = "latex", longtable = T, booktabs = TRUE, caption = "Comparison of Interest Rate Models") %>%
+  kable_styling(full_width = F) %>% 
+  column_spec(1, bold = T) %>% 
+  column_spec(2, width = "10em") %>%
+  column_spec(3, width = "10em") %>%
+  column_spec(4, width = "10em")
+
+```
+
+```{r Vasicek Model, echo=TRUE}
+r0 <- 0.03
+a <- 0.1
+b <- 0.05
+sigma <- 0.02
+T <- 1
+dt <- 1/252
+n <- T/dt
+
+short_rate <- numeric(n)
+short_rate[1] <- r0
+
+
+set.seed(123)
+
+
+for (i in 2:n) {
+  dW <- rnorm(1, mean = 0, sd = sqrt(dt))
+  short_rate[i] <- short_rate[i-1] + a * (b-short_rate[i-1]) * dt + sigma * dW
+}
+
+plot(short_rate, 
+     type = "l", 
+     col = "blue", 
+     xlab = "Time Step", 
+     ylab = "Interest Rate", 
+     main = "Vasicek Model")
+
+```
+
+
+```{r CIR Model, echo=TRUE}
+
+
+a <- 0.1     
+b <- 0.05    
+sigma <- 0.02 
+r0 <- 0.03   
+T <- 1       
+dt <- 1/252  
+n <- T/dt    
+
+# short rate
+short_rate <- numeric(n)
+short_rate[1] <- r0
+
+set.seed(123)
+for (i in 2:n) {
+  dW <- rnorm(1, mean = 0, sd = sqrt(dt))
+  short_rate[i] <- short_rate[i-1] + a * (b - short_rate[i-1]) * dt + sigma * sqrt(short_rate[i-1]) * dW
+  short_rate[i] <- max(short_rate[i], 0)  # Ensure non-negativity
+}
+
+
+plot(short_rate, type = "l", col = "darkgreen", xlab = "Time Step", ylab = "Interest Rate", main = "CIR Model Simulation")
+```
+
+
+```{r HW Model, echo = TRUE}
+
+
+a <- 0.1     
+sigma <- 0.02
+r0 <- 0.03   
+T <- 1       
+dt <- 1/252  
+n <- T/dt    
+short_rate <- numeric(n)
+short_rate[1] <- r0
+
+
+set.seed(123)
+for (i in 2:n) {
+  dW <- rnorm(1, mean = 0, sd = sqrt(dt))
+  theta <- 0.05
+  short_rate[i] <- short_rate[i-1] + a * (theta - short_rate[i-1]) * dt + sigma * dW
+}
+
+plot(short_rate, type = "l", col = "blue", xlab = "Time Step", ylab = "Interest Rate", main = "Hull-White Model Simulation")
+```
+
+
+
+
+```{r Black - Karasinski Model}
+
+a <- 0.1     
+sigma <- 0.02 
+r0 <- 0.03   
+T <- 1       
+dt <- 1/252  
+n <- T/dt    
+
+
+short_rate <- numeric(n)
+short_rate[1] <- log(r0)
+
+
+set.seed(123)
+for (i in 2:n) {
+  dW <- rnorm(1, mean = 0, sd = sqrt(dt))
+  short_rate[i] <- short_rate[i-1] + a * (log(0.05) - short_rate[i-1]) * dt + sigma * dW
+}
+
+
+short_rate <- exp(short_rate)
+
+
+plot(short_rate, type = "l", col = "brown", xlab = "Time Step", ylab = "Interest Rate", main = "Black-Karasinski Model Simulation")
+
+```
+
+```{r Nelson-Sigel}
+
+library(minpack.lm)
+
+
+nelson_siegel <- function(t, beta0, beta1, beta2, lambda) {
+  return(beta0 + beta1 * (1 - exp(-lambda * t)) / (lambda * t) + beta2 * ((1 - exp(-lambda * t)) / (lambda * t) - exp(-lambda * t)))
+}
+
+
+maturity <- c(1, 2, 3, 5, 7, 10)
+yield <- c(0.02, 0.025, 0.027, 0.03, 0.032, 0.035)
+
+
+ns_model <- nlsLM(yield ~ nelson_siegel(maturity, beta0, beta1, beta2, lambda),
+                  start = list(beta0 = 0.03, beta1 = -0.01, beta2 = 0.01, lambda = 0.5))
+
+summary(ns_model)
+
+
+fitted_yield <- predict(ns_model)
+plot(maturity, yield, pch = 19, col = "red", xlab = "Maturity (Years)", ylab = "Yield", main = "Nelson-Siegel Yield Curve")
+lines(maturity, fitted_yield, col = "blue", lwd = 2)
+
+```
+

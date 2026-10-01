@@ -1,0 +1,22 @@
+Package: termstructuremodeling
+Title: One-Factor Short Rate Models and Nelson-Siegel Curve Fitting
+Version: 0.1.0
+Description: Vectorised simulation of Vasicek, CIR, Hull-White and
+    Black-Karasinski short rate models, closed-form zero-coupon bond prices
+    where available, and Nelson-Siegel curve fitting against FRED Treasury
+    yields. Not a published package; the DESCRIPTION file exists only so
+    r-lib/actions/setup-r-dependencies can install the dependencies below.
+    Scripts are run directly with Rscript, not via library(termstructuremodeling).
+License: MIT
+Encoding: UTF-8
+Imports:
+    minpack.lm,
+    quantmod,
+    xts,
+    zoo,
+    ggplot2
+Suggests:
+    testthat (>= 3.0.0),
+    knitr,
+    kableExtra,
+    rmarkdown

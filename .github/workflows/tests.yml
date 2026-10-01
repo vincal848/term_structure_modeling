@@ -1,0 +1,19 @@
+name: tests
+
+on:
+  push:
+    branches: [main, rebuild]
+  pull_request:
+
+jobs:
+  testthat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::testthat
+          needs: check
+      - name: Test
+        run: Rscript -e 'testthat::test_dir("tests/testthat", stop_on_failure = TRUE)'

@@ -1,0 +1,11 @@
+# R session/workspace artifacts
+.Rhistory
+.RData
+.Rproj.user/
+*_cache/
+*_files/
+
+# Rendered output from Term_Structure_Discussions.Rmd -- regenerate with
+# rmarkdown::render(), do not commit
+Term_Structure_Discussions.html
+Term_Structure_Discussions.knit.md

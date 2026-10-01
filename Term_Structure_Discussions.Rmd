@@ -2,38 +2,41 @@
 title: "Term Structure Models"
 author: "Caleb Vinson"
 date: " "
-output: pdf_document
+output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(stats)
-library(minpack.lm)
-library(quantmod)
-library(vars)
-library(ggplot2)
 library(knitr)
 library(kableExtra)
+library(ggplot2)
+
+for (.f in sort(list.files("R", pattern = "\\.R$", full.names = TRUE))) source(.f)
 ```
 
+The theory behind each model below -- bootstrapping, the risk-neutral discount
+formula, the affine SDE family, and where each named model sits in it -- is
+written up in [docs/THEORY.md](docs/THEORY.md). This file is the narrative and
+the code; the full numeric validation this narrative draws on is regenerated
+by `Rscript run.R validate` into [docs/VALIDATION.md](docs/VALIDATION.md), and
+the "What was wrong" section in the README documents what changed from the
+original version of this notebook (kept at
+[legacy/Term_Structure_Discussions_original.Rmd](legacy/Term_Structure_Discussions_original.Rmd)).
 
-```{r, echo=FALSE}
-
-
-
+```{r model-comparison, echo=FALSE}
 models <- data.frame(
   Model = c("Vasicek", "CIR", "Hull-White", "Black-Karasinski", "Nelson-Siegel"),
   Uniqueness = c(
     "Mean-reverting with constant volatility.",
     "Non-negativity via square-root volatility.",
-    "Time-dependent mean reversion.",
+    "Time-dependent mean reversion, fit to today's curve.",
     "Logarithmic modeling of the short rate.",
     "Empirical yield curve representation."
   ),
   Pro = c(
     "Analytical tractability.",
     "Ensures positive rates.",
-    "Fits initial yield curve.",
+    "Fits initial yield curve exactly.",
     "Ensures positive rates.",
     "Intuitive interpretation of parameters."
   ),
@@ -41,155 +44,121 @@ models <- data.frame(
     "Allows negative rates.",
     "Difficult to calibrate.",
     "Increased calibration complexity.",
-    "Requires numerical solutions.",
+    "No closed-form bond price.",
     "Lacks arbitrage-free properties."
   )
 )
 
-kable(models, format = "latex", longtable = T, booktabs = TRUE, caption = "Comparison of Interest Rate Models") %>%
-  kable_styling(full_width = F) %>% 
-  column_spec(1, bold = T) %>% 
-  column_spec(2, width = "10em") %>%
-  column_spec(3, width = "10em") %>%
-  column_spec(4, width = "10em")
-
+kable(models, caption = "Comparison of interest rate models") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE)
 ```
 
-```{r Vasicek Model, echo=TRUE}
-r0 <- 0.03
-a <- 0.1
-b <- 0.05
-sigma <- 0.02
-T <- 1
-dt <- 1/252
-n <- T/dt
+## Short rate models
 
-short_rate <- numeric(n)
-short_rate[1] <- r0
+Each model is simulated over many paths rather than one, which is the point:
+a single path at a single seed says nothing about the distribution a model
+implies, only about the one draw that happened to come up. `R/short_rate.R`
+has the full documentation for how non-negativity is enforced for CIR and
+Black-Karasinski without the clipping bias the original notebook had.
 
-
-set.seed(123)
-
-
-for (i in 2:n) {
-  dW <- rnorm(1, mean = 0, sd = sqrt(dt))
-  short_rate[i] <- short_rate[i-1] + a * (b-short_rate[i-1]) * dt + sigma * dW
-}
-
-plot(short_rate, 
-     type = "l", 
-     col = "blue", 
-     xlab = "Time Step", 
-     ylab = "Interest Rate", 
-     main = "Vasicek Model")
-
+```{r vasicek, fig.cap="Vasicek: 30 paths, r0=0.03, a=0.5, b=0.04, sigma=0.015"}
+v <- simulate_vasicek(r0 = 0.03, a = 0.5, b = 0.04, sigma = 0.015, Tt = 1, dt = 1 / 252,
+                       n_paths = 30, seed = 123)
+df <- data.frame(t = attr(v, "times"), v)
+df_long <- reshape(df, varying = names(df)[-1], v.names = "rate", direction = "long",
+                    timevar = "path")
+ggplot(df_long, aes(t, rate, group = path)) +
+  geom_line(alpha = 0.3, color = "steelblue") +
+  labs(title = "Vasicek short rate, 30 paths", x = "time (years)", y = "short rate") +
+  theme_minimal()
 ```
 
-
-```{r CIR Model, echo=TRUE}
-
-
-a <- 0.1     
-b <- 0.05    
-sigma <- 0.02 
-r0 <- 0.03   
-T <- 1       
-dt <- 1/252  
-n <- T/dt    
-
-# short rate
-short_rate <- numeric(n)
-short_rate[1] <- r0
-
-set.seed(123)
-for (i in 2:n) {
-  dW <- rnorm(1, mean = 0, sd = sqrt(dt))
-  short_rate[i] <- short_rate[i-1] + a * (b - short_rate[i-1]) * dt + sigma * sqrt(short_rate[i-1]) * dW
-  short_rate[i] <- max(short_rate[i], 0)  # Ensure non-negativity
-}
-
-
-plot(short_rate, type = "l", col = "darkgreen", xlab = "Time Step", ylab = "Interest Rate", main = "CIR Model Simulation")
+```{r cir, fig.cap="CIR: 30 paths via the exact noncentral chi-square scheme"}
+cir <- simulate_cir(r0 = 0.03, a = 0.8, b = 0.05, sigma = 0.12, Tt = 1, dt = 1 / 252,
+                     n_paths = 30, seed = 123, method = "exact")
+stopifnot(all(cir >= 0))
+df <- data.frame(t = attr(cir, "times"), cir)
+df_long <- reshape(df, varying = names(df)[-1], v.names = "rate", direction = "long",
+                    timevar = "path")
+ggplot(df_long, aes(t, rate, group = path)) +
+  geom_line(alpha = 0.3, color = "darkgreen") +
+  labs(title = sprintf("CIR short rate, 30 paths (min observed: %.4f)", min(cir)),
+       x = "time (years)", y = "short rate") +
+  theme_minimal()
 ```
 
-
-```{r HW Model, echo = TRUE}
-
-
-a <- 0.1     
-sigma <- 0.02
-r0 <- 0.03   
-T <- 1       
-dt <- 1/252  
-n <- T/dt    
-short_rate <- numeric(n)
-short_rate[1] <- r0
-
-
-set.seed(123)
-for (i in 2:n) {
-  dW <- rnorm(1, mean = 0, sd = sqrt(dt))
-  theta <- 0.05
-  short_rate[i] <- short_rate[i-1] + a * (theta - short_rate[i-1]) * dt + sigma * dW
-}
-
-plot(short_rate, type = "l", col = "blue", xlab = "Time Step", ylab = "Interest Rate", main = "Hull-White Model Simulation")
+```{r black-karasinski, fig.cap="Black-Karasinski: 30 paths, log-rate Euler"}
+bk <- simulate_bk(r0 = 0.03, a = 0.5, theta = 0.04, sigma = 0.25, Tt = 1, dt = 1 / 252,
+                   n_paths = 30, seed = 123)
+stopifnot(all(bk > 0))
+df <- data.frame(t = attr(bk, "times"), bk)
+df_long <- reshape(df, varying = names(df)[-1], v.names = "rate", direction = "long",
+                    timevar = "path")
+ggplot(df_long, aes(t, rate, group = path)) +
+  geom_line(alpha = 0.3, color = "brown") +
+  labs(title = "Black-Karasinski short rate, 30 paths", x = "time (years)", y = "short rate") +
+  theme_minimal()
 ```
 
+## Hull-White, fit to today's curve
 
+Unlike the three models above, Hull-White's mean-reversion level theta(t) is
+not a constant: it is derived from the cached Treasury curve
+(`data/treasury_curve.csv`, loaded through `R/data.R`) so that the model
+reproduces that curve exactly at t=0 by construction. See
+`simulate_hull_white()` and `hull_white_bond_price()` for the formulas.
 
+```{r hull-white}
+fred <- load_treasury_curve()
+dc <- discount_curve_from_zero_rates(fred$maturity_years, fred$yield_pct / 100)
+r0 <- forward_rate_from_discount(dc)(0)
 
-```{r Black - Karasinski Model}
-
-a <- 0.1     
-sigma <- 0.02 
-r0 <- 0.03   
-T <- 1       
-dt <- 1/252  
-n <- T/dt    
-
-
-short_rate <- numeric(n)
-short_rate[1] <- log(r0)
-
-
-set.seed(123)
-for (i in 2:n) {
-  dW <- rnorm(1, mean = 0, sd = sqrt(dt))
-  short_rate[i] <- short_rate[i-1] + a * (log(0.05) - short_rate[i-1]) * dt + sigma * dW
-}
-
-
-short_rate <- exp(short_rate)
-
-
-plot(short_rate, type = "l", col = "brown", xlab = "Time Step", ylab = "Interest Rate", main = "Black-Karasinski Model Simulation")
-
+hw <- simulate_hull_white(r0, a = 0.5, sigma = 0.01, Tt = 1, dt = 1 / 252, dc,
+                           n_paths = 30, seed = 123)
+df <- data.frame(t = attr(hw, "times"), hw)
+df_long <- reshape(df, varying = names(df)[-1], v.names = "rate", direction = "long",
+                    timevar = "path")
+ggplot(df_long, aes(t, rate, group = path)) +
+  geom_line(alpha = 0.3, color = "purple") +
+  labs(title = "Hull-White short rate, 30 paths", x = "time (years)", y = "short rate") +
+  theme_minimal()
 ```
 
-```{r Nelson-Sigel}
-
-library(minpack.lm)
-
-
-nelson_siegel <- function(t, beta0, beta1, beta2, lambda) {
-  return(beta0 + beta1 * (1 - exp(-lambda * t)) / (lambda * t) + beta2 * ((1 - exp(-lambda * t)) / (lambda * t) - exp(-lambda * t)))
-}
-
-
-maturity <- c(1, 2, 3, 5, 7, 10)
-yield <- c(0.02, 0.025, 0.027, 0.03, 0.032, 0.035)
-
-
-ns_model <- nlsLM(yield ~ nelson_siegel(maturity, beta0, beta1, beta2, lambda),
-                  start = list(beta0 = 0.03, beta1 = -0.01, beta2 = 0.01, lambda = 0.5))
-
-summary(ns_model)
-
-
-fitted_yield <- predict(ns_model)
-plot(maturity, yield, pch = 19, col = "red", xlab = "Maturity (Years)", ylab = "Yield", main = "Nelson-Siegel Yield Curve")
-lines(maturity, fitted_yield, col = "blue", lwd = 2)
-
+```{r hull-white-fit, echo=FALSE}
+maturities_check <- c(1, 2, 5, 10, 20)
+check <- data.frame(
+  maturity = maturities_check,
+  curve = sapply(maturities_check, dc),
+  hull_white = sapply(maturities_check, function(Tt) {
+    hull_white_bond_price(r0, a = 0.5, sigma = 0.01, t = 0, Tt = Tt, discount_curve = dc)
+  })
+)
+kable(check, digits = 6, caption = "Hull-White reproduces the input curve exactly at t=0") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
 ```
 
+## Nelson-Siegel
+
+Fit to the same cached Treasury curve, rather than to six hardcoded points.
+
+```{r nelson-siegel}
+fit <- fit_ns(fred$maturity_years, fred$yield_pct / 100)
+tau <- seq(0.01, 30, length.out = 300)
+fitted_curve <- nelson_siegel(tau, fit$params$beta0, fit$params$beta1, fit$params$beta2,
+                               fit$params$lambda)
+
+ggplot() +
+  geom_line(data = data.frame(tau = tau, yield = fitted_curve * 100),
+            aes(tau, yield), color = "steelblue", linewidth = 1) +
+  geom_point(data = data.frame(maturity = fred$maturity_years, yield = fred$yield_pct),
+             aes(maturity, yield), color = "firebrick", size = 2) +
+  labs(title = sprintf("Nelson-Siegel fit, %s (RMSE %.1f bp)", fred$date[1], fit$rmse * 1e4),
+       x = "maturity (years)", y = "yield (%)") +
+  theme_minimal()
+```
+
+Full numeric validation -- Monte Carlo vs closed-form bond prices, moment
+checks, and the Nelson-Siegel parameter recovery on synthetic data -- is in
+[docs/VALIDATION.md](docs/VALIDATION.md), regenerated by `Rscript run.R
+validate`.

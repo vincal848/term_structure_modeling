@@ -18,10 +18,9 @@ The theory behind each model below -- bootstrapping, the risk-neutral discount
 formula, the affine SDE family, and where each named model sits in it -- is
 written up in [docs/THEORY.md](docs/THEORY.md). This file is the narrative and
 the code; the full numeric validation this narrative draws on is regenerated
-by `Rscript run.R validate` into [docs/VALIDATION.md](docs/VALIDATION.md), and
-the "What was wrong" section in the README documents what changed from the
-original version of this notebook (kept at
-[legacy/Term_Structure_Discussions_original.Rmd](legacy/Term_Structure_Discussions_original.Rmd)).
+by `Rscript run.R validate` into [docs/VALIDATION.md](docs/VALIDATION.md). The
+original version of this notebook is kept at
+[legacy/Term_Structure_Discussions_original.Rmd](legacy/Term_Structure_Discussions_original.Rmd).
 
 ```{r model-comparison, echo=FALSE}
 models <- data.frame(

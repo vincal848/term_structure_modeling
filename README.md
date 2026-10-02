@@ -74,68 +74,6 @@ tested (1y, 2y, 5y, 10y, 20y: diff `0.00e+00` at each), and a 5,000-path,
 `3 x SE` of the closed form (0.771858 vs 0.772207, diff -3.49e-04, 3 x SE
 1.00e-03).
 
-## What was wrong
-
-**"Hull-White" was Vasicek with a constant `theta <- 0.05` typed inside the
-loop.** Hull-White's entire reason for existing is a mean-reversion level that
-varies with time so the model can match an observed curve; a constant theta
-collapses it back to Vasicek. `simulate_hull_white()` now derives theta(t)
-from the forward curve implied by an arbitrary discount curve (Brigo &
-Mercurio eq. 3.34), and
-`test_hull_white_reproduces_the_input_discount_curve_exactly_at_t_0` pins the
-result to `1e-10`.
-
-**CIR clipped negative simulated rates to zero**
-(`short_rate[i] <- max(short_rate[i], 0)`), which is a reflecting barrier, not
-the CIR process -- it injects extra probability mass just above zero on every
-step that would have gone negative, biasing the mean upward, worst when the
-Feller condition is violated. `simulate_cir()` defaults to the exact
-noncentral chi-square transition (Cox, Ingersoll & Ross, 1985), which is
-non-negative by construction with zero discretization error, and documents a
-full-truncation Euler alternative for when an Euler scheme is wanted anyway.
-
-**Nothing was ever checked against a closed form.** Every model chunk
-produced one plotted path and stopped; there was no zero-coupon bond price
-formula anywhere to compare it against. `R/bond_prices.R` adds the affine
-closed forms for Vasicek and CIR and the curve-fitted closed form for
-Hull-White, and `mc_bond_price()` turns any simulated path matrix into a
-Monte Carlo price with a standard error, so the two can be checked against
-each other -- which is most of what `docs/VALIDATION.md` is.
-
-**`n <- T/dt` was used as a step count with no check that it was actually an
-integer**, and `T <- 1` shadowed base R's `T` (the built-in alias for `TRUE`)
-for the rest of every chunk that declared it.
-`.check_sim_inputs()` validates the step count and every `simulate_*()`
-function uses `Tt`, never `T`.
-
-**Nelson-Siegel was fit to six hardcoded maturity/yield points** with no test
-that the fit could recover known parameters or work on real data. `fit_ns()`
-recovers synthetic parameters to RMSE `3.96e-18` and fits the cached FRED
-curve to 9.5 bp RMSE (`test_fit_ns_recovers_known_parameters_from_synthetic_noiseless_data`,
-`test_fit_ns_has_small_rmse_on_the_cached_fred_curve`).
-
-**`quantmod`, `vars`, and `ggplot2` were loaded and never called.** quantmod
-now does real work in `R/data.R`, ggplot2 produces every figure in
-`R/validate.R`, and `vars` is dropped -- there was never a VAR model in this
-project.
-
-A sixth defect turned up in the rebuild itself, in the new Hull-White code,
-and is worth recording because it would have passed any test that only
-checked the output at convenient points. The discount curve built from zero
-rates clamped maturities to `[min, max]` before evaluating the spline, which
-is a reasonable-sounding way to extrapolate flat. It instead created a kink
-in the zero-rate curve exactly at the shortest quoted maturity, and
-differentiating that kink to get `theta(t)` produced a spike of **150** at a
-single time step on a curve where every rate was between 2% and 4%. Because
-`theta(t)` is shared across every simulated path, that one bad grid point
-corrupted all 20,000 of them identically -- the Monte Carlo bond price came
-back at 0.0078 against a closed form of 0.89. Letting the natural cubic
-spline extrapolate on its own (linear from the boundary slope, which is what
-"natural" already guarantees) removed the kink; `.deriv0()` in
-`R/bond_prices.R` also now refuses to evaluate a curve function at a negative
-time rather than silently clamping, so a similar boundary bug would error
-instead of produce a quietly wrong number.
-
 ## How it works
 
 ```mermaid
@@ -239,7 +177,7 @@ Rscript run.R validate                               # regenerates docs/VALIDATI
 | `R/validate.R` | `run_validate()`, called by `run.R validate` |
 | `run.R` | CLI: `simulate`, `bonds`, `fit-ns`, `validate` |
 | `Term_Structure_Discussions.Rmd` | Narrative notebook, sources `R/`, knits to HTML |
-| `tests/testthat/` | 47 tests, including a named regression for each defect above |
+| `tests/testthat/` | 47 tests |
 | `docs/THEORY.md` | Bootstrapping, the risk-neutral discount formula, the affine SDE family |
 | `docs/VALIDATION.md` | Full tables: moments, bond prices, curve fits (generated) |
 | `data/treasury_curve.csv` | Cached FRED Treasury par yield curve, one date, 11 maturities |
